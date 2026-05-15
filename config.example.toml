@@ -1,0 +1,12 @@
+[user]
+# Only "local" is currently supported. Named timezone support can be added later.
+timezone = "local"
+
+[google]
+client_id = "your-google-oauth-client-id"
+client_secret = ""
+
+[[ical]]
+name = "Example Holidays"
+url = "https://example.com/calendar.ics"
+color = "yellow"
