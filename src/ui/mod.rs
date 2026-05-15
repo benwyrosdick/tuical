@@ -1,10 +1,10 @@
 use chrono::{Datelike, Days, Local, TimeZone, Timelike, Weekday};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Row, Table},
 };
 
 use crate::{
@@ -18,7 +18,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(8),
-            Constraint::Length(6),
+            Constraint::Length(7),
+            Constraint::Length(3),
             Constraint::Length(3),
         ])
         .split(frame.area());
@@ -27,6 +28,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
     draw_current_view(frame, app, vertical[1]);
     draw_calendars(frame, app, vertical[2]);
     draw_status(frame, app, vertical[3]);
+    draw_help(frame, app, vertical[4]);
 }
 
 fn draw_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -35,14 +37,16 @@ fn draw_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
         app.view.title(),
         app.selected_date.format("%A, %Y-%m-%d")
     );
-    let help = "d day | w week | m month | h/l prev/next | t today | r refresh | L login | q quit";
-
     let header = Paragraph::new(vec![
         Line::from(Span::styled(
             title,
             Style::default().add_modifier(Modifier::BOLD),
         )),
-        Line::from(help),
+        Line::from(format!(
+            "{} calendar(s), {} visible event(s)",
+            app.calendars.len(),
+            visible_event_count(app)
+        )),
     ])
     .block(Block::default().borders(Borders::ALL));
 
@@ -58,6 +62,8 @@ fn draw_current_view(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn draw_day(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let now = Local::now();
+    let is_today = app.selected_date == now.date_naive();
     let rows = (0..24).map(|hour| {
         let events = events_for_hour(app, hour);
         let summary = if events.is_empty() {
@@ -70,7 +76,16 @@ fn draw_day(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 .join(" | ")
         };
 
-        Row::new(vec![format!("{hour:02}:00"), summary])
+        let row = Row::new(vec![format!("{hour:02}:00"), summary]);
+        if is_today && hour == now.hour() {
+            row.style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            row
+        }
     });
 
     let table = Table::new(rows, [Constraint::Length(8), Constraint::Min(20)])
@@ -127,54 +142,109 @@ fn draw_month(frame: &mut Frame<'_>, app: &App, area: Rect) {
     };
     let month_start = start_of_week(first_day);
 
-    let rows = (0..6).map(|week| {
-        let cells = (0..7).map(|day| {
-            let offset = week * 7 + day;
+    let block = Block::default()
+        .title(format!(" Month: {} ", app.selected_date.format("%B %Y")))
+        .borders(Borders::ALL);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Ratio(1, 6),
+            Constraint::Ratio(1, 6),
+            Constraint::Ratio(1, 6),
+            Constraint::Ratio(1, 6),
+            Constraint::Ratio(1, 6),
+            Constraint::Ratio(1, 6),
+        ])
+        .split(inner);
+
+    draw_month_weekday_header(frame, rows[0]);
+
+    for week in 0..6 {
+        let cells = split_week_row(rows[week + 1]);
+        for day in 0..7 {
+            let offset = (week * 7 + day) as u64;
             let date = month_start
                 .checked_add_days(Days::new(offset))
                 .unwrap_or(month_start);
-            let style = date_style(date, app.selected_date.month());
-            let events = events_for_date(app, date);
-            let label = if let Some(event) = events.first() {
-                let more = events.len().saturating_sub(1);
-                if more > 0 {
-                    format!("{:>2} {} +{more}", date.day(), truncate(&event.title, 8))
-                } else {
-                    format!("{:>2} {}", date.day(), truncate(&event.title, 10))
-                }
-            } else {
-                format!("{:>2}", date.day())
-            };
+            draw_month_cell(frame, app, cells[day], date, app.selected_date.month());
+        }
+    }
+}
 
-            Cell::from(label).style(style)
-        });
+fn draw_month_weekday_header(frame: &mut Frame<'_>, area: Rect) {
+    let cells = split_week_row(area);
+    for (index, label) in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        .iter()
+        .enumerate()
+    {
+        let header = Paragraph::new(*label)
+            .style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .alignment(Alignment::Center);
+        frame.render_widget(header, cells[index]);
+    }
+}
 
-        Row::new(cells)
-    });
+fn draw_month_cell(
+    frame: &mut Frame<'_>,
+    app: &App,
+    area: Rect,
+    date: chrono::NaiveDate,
+    visible_month: u32,
+) {
+    let events = events_for_date(app, date);
+    let event_line_limit = area.height.saturating_sub(3) as usize;
+    let event_width = area.width.saturating_sub(3) as usize;
+    let style = date_style(date, visible_month);
 
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Percentage(14),
-            Constraint::Percentage(14),
-            Constraint::Percentage(14),
-            Constraint::Percentage(14),
-            Constraint::Percentage(14),
-            Constraint::Percentage(15),
-            Constraint::Percentage(15),
-        ],
-    )
-    .header(
-        Row::new(vec!["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"])
-            .style(Style::default().fg(Color::Yellow)),
-    )
-    .block(
+    let mut lines = vec![Line::from(Span::styled(
+        format!("{:>2}", date.day()),
+        style,
+    ))];
+
+    for event in events.iter().take(event_line_limit) {
+        lines.push(Line::from(Span::styled(
+            truncate(&event.title, event_width),
+            month_event_style(date, visible_month),
+        )));
+    }
+
+    let hidden_count = events.len().saturating_sub(event_line_limit);
+    if hidden_count > 0 && event_line_limit > 0 {
+        lines.push(Line::from(Span::styled(
+            format!("+{hidden_count} more"),
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    let cell = Paragraph::new(lines).block(
         Block::default()
-            .title(format!(" Month: {} ", app.selected_date.format("%B %Y")))
-            .borders(Borders::ALL),
+            .borders(Borders::ALL)
+            .border_style(month_cell_border_style(date, visible_month)),
     );
+    frame.render_widget(cell, area);
+}
 
-    frame.render_widget(table, area);
+fn split_week_row(area: Rect) -> std::rc::Rc<[Rect]> {
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(14),
+            Constraint::Percentage(14),
+            Constraint::Percentage(14),
+            Constraint::Percentage(14),
+            Constraint::Percentage(14),
+            Constraint::Percentage(15),
+            Constraint::Percentage(15),
+        ])
+        .split(area)
 }
 
 fn draw_calendars(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -183,16 +253,36 @@ fn draw_calendars(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else {
         app.calendars
             .iter()
-            .map(|calendar| {
+            .enumerate()
+            .map(|(index, calendar)| {
                 let access = if calendar.read_only {
                     "read-only"
                 } else {
                     "writable"
                 };
-                ListItem::new(format!(
-                    "{} [{}] {} ({access})",
+                let marker = if app.is_calendar_visible(&calendar.id) {
+                    "[x]"
+                } else {
+                    "[ ]"
+                };
+                let selected = if index == app.selected_calendar_index {
+                    ">"
+                } else {
+                    " "
+                };
+                let style = if index == app.selected_calendar_index {
+                    Style::default().add_modifier(Modifier::REVERSED)
+                } else if app.is_calendar_visible(&calendar.id) {
+                    Style::default()
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+
+                ListItem::new(Line::from(format!(
+                    "{selected} {marker} {} [{}] {} ({access})",
                     calendar.name, calendar.provider_id, calendar.color
-                ))
+                )))
+                .style(style)
             })
             .collect()
     };
@@ -207,6 +297,21 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .block(Block::default().title(" Status ").borders(Borders::ALL));
 
     frame.render_widget(status, area);
+}
+
+fn draw_help(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let calendar_help = app
+        .selected_calendar()
+        .map(|calendar| format!("calendar: {} | j/k select | space show/hide", calendar.name))
+        .unwrap_or_else(|| "calendar: none configured".to_string());
+    let commands = format!(
+        "views: d day, w week, m month | nav: h/l prev/next, t today | sync: r refresh, L login | {calendar_help} | q quit"
+    );
+    let help = Paragraph::new(commands)
+        .style(Style::default().fg(Color::Yellow))
+        .block(Block::default().title(" Commands ").borders(Borders::ALL));
+
+    frame.render_widget(help, area);
 }
 
 fn start_of_week(date: chrono::NaiveDate) -> chrono::NaiveDate {
@@ -242,10 +347,18 @@ fn events_for_date(app: &App, date: chrono::NaiveDate) -> Vec<&Event> {
     let mut events: Vec<&Event> = app
         .events
         .iter()
+        .filter(|event| app.is_calendar_visible(&event.calendar_id))
         .filter(|event| event.starts_at < day_end && event.ends_at > day_start)
         .collect();
     events.sort_by_key(|event| event.starts_at);
     events
+}
+
+fn visible_event_count(app: &App) -> usize {
+    app.events
+        .iter()
+        .filter(|event| app.is_calendar_visible(&event.calendar_id))
+        .count()
 }
 
 fn local_midnight_utc(date: chrono::NaiveDate) -> chrono::DateTime<chrono::Utc> {
@@ -263,6 +376,24 @@ fn date_style(date: chrono::NaiveDate, visible_month: u32) -> Style {
             .add_modifier(Modifier::BOLD)
     } else if date.month() == visible_month {
         Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    }
+}
+
+fn month_event_style(date: chrono::NaiveDate, visible_month: u32) -> Style {
+    if date.month() == visible_month {
+        Style::default()
+    } else {
+        Style::default().fg(Color::DarkGray)
+    }
+}
+
+fn month_cell_border_style(date: chrono::NaiveDate, visible_month: u32) -> Style {
+    if date == Local::now().date_naive() {
+        Style::default().fg(Color::Yellow)
+    } else if date.month() == visible_month {
+        Style::default().fg(Color::Blue)
     } else {
         Style::default().fg(Color::DarkGray)
     }

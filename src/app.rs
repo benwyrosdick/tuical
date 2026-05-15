@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use anyhow::Result;
 use chrono::{Datelike, Days, Local, Months, TimeZone, Utc};
@@ -24,6 +24,8 @@ pub struct App {
     pub selected_date: chrono::NaiveDate,
     pub calendars: Vec<Calendar>,
     pub events: Vec<Event>,
+    pub hidden_calendar_ids: HashSet<String>,
+    pub selected_calendar_index: usize,
     pub status: String,
     should_quit: bool,
 }
@@ -48,6 +50,8 @@ impl App {
             selected_date: Local::now().date_naive(),
             calendars: Vec::new(),
             events: Vec::new(),
+            hidden_calendar_ids: HashSet::new(),
+            selected_calendar_index: 0,
             status,
             should_quit: false,
         }
@@ -93,6 +97,8 @@ impl App {
             self.status = "Google configured. Press L to log in with browser OAuth.".to_string();
         }
 
+        self.clamp_calendar_selection();
+
         Ok(())
     }
 
@@ -107,10 +113,25 @@ impl App {
 
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Char('d') => self.view = CalendarView::Day,
-            KeyCode::Char('w') => self.view = CalendarView::Week,
-            KeyCode::Char('m') => self.view = CalendarView::Month,
-            KeyCode::Char('t') => self.selected_date = Local::now().date_naive(),
+            KeyCode::Char('d') => {
+                self.view = CalendarView::Day;
+                self.refresh_events().await?;
+            }
+            KeyCode::Char('w') => {
+                self.view = CalendarView::Week;
+                self.refresh_events().await?;
+            }
+            KeyCode::Char('m') => {
+                self.view = CalendarView::Month;
+                self.refresh_events().await?;
+            }
+            KeyCode::Char('t') => {
+                self.selected_date = Local::now().date_naive();
+                self.refresh_events().await?;
+            }
+            KeyCode::Char('j') | KeyCode::Down => self.select_next_calendar(),
+            KeyCode::Char('k') | KeyCode::Up => self.select_previous_calendar(),
+            KeyCode::Char(' ') => self.toggle_selected_calendar_visibility(),
             KeyCode::Char('h') | KeyCode::Left => {
                 self.move_backward();
                 self.refresh_events().await?;
@@ -159,6 +180,59 @@ impl App {
                 .checked_add_months(Months::new(1))
                 .unwrap_or(self.selected_date),
         };
+    }
+
+    pub fn is_calendar_visible(&self, calendar_id: &str) -> bool {
+        !self.hidden_calendar_ids.contains(calendar_id)
+    }
+
+    pub fn selected_calendar(&self) -> Option<&Calendar> {
+        self.calendars.get(self.selected_calendar_index)
+    }
+
+    fn select_next_calendar(&mut self) {
+        if self.calendars.is_empty() {
+            return;
+        }
+
+        self.selected_calendar_index = (self.selected_calendar_index + 1) % self.calendars.len();
+    }
+
+    fn select_previous_calendar(&mut self) {
+        if self.calendars.is_empty() {
+            return;
+        }
+
+        self.selected_calendar_index = if self.selected_calendar_index == 0 {
+            self.calendars.len() - 1
+        } else {
+            self.selected_calendar_index - 1
+        };
+    }
+
+    fn toggle_selected_calendar_visibility(&mut self) {
+        let Some(calendar) = self.selected_calendar() else {
+            self.status = "No calendar selected.".to_string();
+            return;
+        };
+
+        let calendar_id = calendar.id.clone();
+        let calendar_name = calendar.name.clone();
+
+        if self.hidden_calendar_ids.remove(&calendar_id) {
+            self.status = format!("Showing calendar: {calendar_name}");
+        } else {
+            self.hidden_calendar_ids.insert(calendar_id);
+            self.status = format!("Hiding calendar: {calendar_name}");
+        }
+    }
+
+    fn clamp_calendar_selection(&mut self) {
+        if self.calendars.is_empty() {
+            self.selected_calendar_index = 0;
+        } else if self.selected_calendar_index >= self.calendars.len() {
+            self.selected_calendar_index = self.calendars.len() - 1;
+        }
     }
 
     async fn login_google(&mut self) -> Result<()> {
