@@ -35,6 +35,7 @@ impl CalendarProvider for IcalProvider {
     async fn list_calendars(&self) -> Result<Vec<Calendar>> {
         Ok(vec![Calendar {
             id: self.id.clone(),
+            remote_id: self.id.clone(),
             provider_id: self.id.clone(),
             source: CalendarSource::IcalUrl,
             name: self.config.name.clone(),

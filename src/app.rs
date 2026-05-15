@@ -10,7 +10,7 @@ use crate::{
     model::{Calendar, CalendarView, Event, TimeRange},
     provider::{
         CalendarProvider,
-        google::{GoogleProvider, GoogleTokenSet},
+        google::{GoogleProvider, StoredGoogleAccount, TokenStore},
         ical::IcalProvider,
     },
     ui,
@@ -244,7 +244,23 @@ impl App {
         let provider = GoogleProvider::new(google_config);
         self.status = "Opening Google login in your browser...".to_string();
         let tokens = provider.login_with_browser().await?;
-        tokens.save(TOKEN_FILE)?;
+        let account_id =
+            StoredGoogleAccount::new("Google account".to_string(), None, tokens.clone()).id;
+        let token_provider = GoogleProvider::with_tokens(
+            self.config.google.clone().expect("checked above"),
+            tokens.clone(),
+            format!("google:{account_id}"),
+        );
+        let summary = token_provider.account_summary().await?;
+        let account = StoredGoogleAccount {
+            id: account_id,
+            label: summary.label,
+            primary_calendar_id: summary.primary_calendar_id,
+            tokens,
+        };
+        let mut store = TokenStore::load(TOKEN_FILE)?;
+        store.upsert_google_account(account);
+        store.save(TOKEN_FILE)?;
         self.status = "Google login complete. Fetching calendars and events...".to_string();
         self.load_configured_calendars().await?;
         Ok(())
@@ -267,25 +283,45 @@ impl App {
             return Ok(());
         };
 
-        let Some(tokens) = GoogleTokenSet::load(TOKEN_FILE)? else {
+        let mut store = TokenStore::load(TOKEN_FILE)?;
+        if store.google.is_empty() {
             return Ok(());
         };
         let token_provider = GoogleProvider::new(google_config.clone());
-        let tokens = if tokens.is_expired() {
-            let refreshed = token_provider.refresh_tokens(&tokens).await?;
-            refreshed.save(TOKEN_FILE)?;
-            refreshed
-        } else {
-            tokens
-        };
+        let mut google_calendar_count = 0;
 
-        let provider = GoogleProvider::with_tokens(google_config, tokens);
-        let google_calendars = provider.list_calendars().await?;
-        let google_calendar_count = google_calendars.len();
-        self.calendars.extend(google_calendars);
+        for account in &mut store.google {
+            if account.tokens.is_expired() {
+                account.tokens = token_provider.refresh_tokens(&account.tokens).await?;
+            }
+
+            let provider = GoogleProvider::with_tokens(
+                google_config.clone(),
+                account.tokens.clone(),
+                account.provider_id(),
+            );
+
+            if account.primary_calendar_id.is_none() {
+                let summary = provider.account_summary().await?;
+                account.label = summary.label;
+                account.primary_calendar_id = summary.primary_calendar_id;
+            }
+
+            let mut google_calendars = provider.list_calendars().await?;
+            google_calendar_count += google_calendars.len();
+
+            for calendar in &mut google_calendars {
+                calendar.name = format!("{} / {}", account.label, calendar.name);
+            }
+
+            self.calendars.extend(google_calendars);
+        }
+
+        store.save(TOKEN_FILE)?;
         self.sync_google_events().await?;
         self.status = format!(
-            "Loaded {} Google calendar(s) and {} event(s). Press r to refresh.",
+            "Loaded {} Google account(s), {} calendar(s), and {} event(s). Press r to refresh.",
+            store.google.len(),
             google_calendar_count,
             self.events.len()
         );
@@ -297,35 +333,42 @@ impl App {
         let Some(google_config) = self.config.google.clone() else {
             return Ok(());
         };
-        let Some(tokens) = GoogleTokenSet::load(TOKEN_FILE)? else {
+        let mut store = TokenStore::load(TOKEN_FILE)?;
+        if store.google.is_empty() {
             return Ok(());
         };
 
         let token_provider = GoogleProvider::new(google_config.clone());
-        let tokens = if tokens.is_expired() {
-            let refreshed = token_provider.refresh_tokens(&tokens).await?;
-            refreshed.save(TOKEN_FILE)?;
-            refreshed
-        } else {
-            tokens
-        };
-
-        let provider = GoogleProvider::with_tokens(google_config, tokens);
         let range = self.visible_time_range();
-        let google_calendars: Vec<Calendar> = self
-            .calendars
-            .iter()
-            .filter(|calendar| calendar.provider_id == "google")
-            .cloned()
-            .collect();
 
-        for calendar in google_calendars {
-            let mut events = provider.list_events(&calendar.id, range).await?;
-            for event in &mut events {
-                event.color = calendar.color.clone();
+        for account in &mut store.google {
+            if account.tokens.is_expired() {
+                account.tokens = token_provider.refresh_tokens(&account.tokens).await?;
             }
-            self.events.extend(events);
+
+            let provider = GoogleProvider::with_tokens(
+                google_config.clone(),
+                account.tokens.clone(),
+                account.provider_id(),
+            );
+            let google_calendars: Vec<Calendar> = self
+                .calendars
+                .iter()
+                .filter(|calendar| calendar.provider_id == provider.id())
+                .cloned()
+                .collect();
+
+            for calendar in google_calendars {
+                let mut events = provider.list_events(&calendar.remote_id, range).await?;
+                for event in &mut events {
+                    event.calendar_id = calendar.id.clone();
+                    event.color = calendar.color.clone();
+                }
+                self.events.extend(events);
+            }
         }
+
+        store.save(TOKEN_FILE)?;
 
         self.status = format!(
             "Loaded {} event(s) for {}.",

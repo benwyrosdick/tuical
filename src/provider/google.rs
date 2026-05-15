@@ -1,4 +1,8 @@
-use std::{fs, path::Path, time::Duration};
+use std::{
+    fs,
+    path::Path,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use async_trait::async_trait;
@@ -31,6 +35,7 @@ const CALLBACK_PATH: &str = "/oauth/google/callback";
 pub struct GoogleProvider {
     config: GoogleConfig,
     tokens: Option<GoogleTokenSet>,
+    provider_id: String,
 }
 
 impl GoogleProvider {
@@ -38,13 +43,15 @@ impl GoogleProvider {
         Self {
             config,
             tokens: None,
+            provider_id: "google".to_string(),
         }
     }
 
-    pub fn with_tokens(config: GoogleConfig, tokens: GoogleTokenSet) -> Self {
+    pub fn with_tokens(config: GoogleConfig, tokens: GoogleTokenSet, provider_id: String) -> Self {
         Self {
             config,
             tokens: Some(tokens),
+            provider_id,
         }
     }
 
@@ -166,6 +173,129 @@ impl GoogleProvider {
             .map(|tokens| tokens.access_token.as_str())
             .context("Google is not logged in; press L to authenticate")
     }
+
+    pub async fn account_summary(&self) -> Result<GoogleAccountSummary> {
+        let calendars = self.fetch_calendar_list().await?;
+        let primary = calendars
+            .iter()
+            .find(|calendar| calendar.primary)
+            .or_else(|| calendars.first())
+            .context("Google account did not return any calendars")?;
+
+        Ok(GoogleAccountSummary {
+            label: primary.summary.clone(),
+            primary_calendar_id: Some(primary.id.clone()),
+        })
+    }
+
+    async fn fetch_calendar_list(&self) -> Result<Vec<GoogleCalendarListEntry>> {
+        let response = reqwest::Client::new()
+            .get(format!("{GOOGLE_CALENDAR_API}/users/me/calendarList"))
+            .bearer_auth(self.access_token()?)
+            .send()
+            .await
+            .context("failed to fetch Google calendar list")?;
+
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .context("failed to read Google calendar list response")?;
+
+        if !status.is_success() {
+            bail!("Google calendar list fetch failed with {status}: {body}");
+        }
+
+        let response: CalendarListResponse =
+            serde_json::from_str(&body).context("failed to parse Google calendar list")?;
+        Ok(response.items)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GoogleAccountSummary {
+    pub label: String,
+    pub primary_calendar_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TokenStore {
+    #[serde(default)]
+    pub google: Vec<StoredGoogleAccount>,
+}
+
+impl TokenStore {
+    pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+
+        let contents = fs::read_to_string(path)
+            .with_context(|| format!("failed to read tokens from {}", path.display()))?;
+        let value: toml::Value = toml::from_str(&contents)
+            .with_context(|| format!("failed to parse tokens from {}", path.display()))?;
+
+        if value.get("access_token").is_some() {
+            let tokens: GoogleTokenSet = value
+                .try_into()
+                .context("failed to parse legacy single-account Google tokens")?;
+            return Ok(Self {
+                google: vec![StoredGoogleAccount {
+                    id: "legacy".to_string(),
+                    label: "Google account".to_string(),
+                    primary_calendar_id: None,
+                    tokens,
+                }],
+            });
+        }
+
+        value
+            .try_into()
+            .context("failed to parse multi-account token store")
+    }
+
+    pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
+        let contents = toml::to_string_pretty(self)?;
+        fs::write(path, contents).context("failed to write token store")
+    }
+
+    pub fn upsert_google_account(&mut self, account: StoredGoogleAccount) {
+        if let Some(primary_calendar_id) = account.primary_calendar_id.as_deref() {
+            if let Some(existing) = self.google.iter_mut().find(|existing| {
+                existing.primary_calendar_id.as_deref() == Some(primary_calendar_id)
+            }) {
+                *existing = account;
+                return;
+            }
+        }
+
+        self.google.push(account);
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredGoogleAccount {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub primary_calendar_id: Option<String>,
+    pub tokens: GoogleTokenSet,
+}
+
+impl StoredGoogleAccount {
+    pub fn new(label: String, primary_calendar_id: Option<String>, tokens: GoogleTokenSet) -> Self {
+        Self {
+            id: new_google_account_id(),
+            label,
+            primary_calendar_id,
+            tokens,
+        }
+    }
+
+    pub fn provider_id(&self) -> String {
+        format!("google:{}", self.id)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,24 +313,6 @@ pub struct GoogleTokenSet {
 }
 
 impl GoogleTokenSet {
-    pub fn load(path: impl AsRef<Path>) -> Result<Option<Self>> {
-        let path = path.as_ref();
-        if !path.exists() {
-            return Ok(None);
-        }
-
-        let contents = fs::read_to_string(path)
-            .with_context(|| format!("failed to read tokens from {}", path.display()))?;
-        let tokens = toml::from_str(&contents)
-            .with_context(|| format!("failed to parse tokens from {}", path.display()))?;
-        Ok(Some(tokens))
-    }
-
-    pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
-        let contents = toml::to_string_pretty(self)?;
-        fs::write(path, contents).context("failed to write Google token file")
-    }
-
     pub fn is_expired(&self) -> bool {
         self.expires_at
             .map(|expires_at| expires_at <= Utc::now())
@@ -241,7 +353,7 @@ struct CalendarListResponse {
     items: Vec<GoogleCalendarListEntry>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GoogleCalendarListEntry {
     id: String,
@@ -252,6 +364,8 @@ struct GoogleCalendarListEntry {
     access_role: String,
     #[serde(default)]
     deleted: bool,
+    #[serde(default)]
+    primary: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -384,10 +498,18 @@ fn pkce_challenge(code_verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(digest)
 }
 
+fn new_google_account_id() -> String {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    format!("acct-{millis}")
+}
+
 #[async_trait]
 impl CalendarProvider for GoogleProvider {
     fn id(&self) -> &str {
-        "google"
+        &self.provider_id
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
@@ -395,33 +517,15 @@ impl CalendarProvider for GoogleProvider {
     }
 
     async fn list_calendars(&self) -> Result<Vec<Calendar>> {
-        let response = reqwest::Client::new()
-            .get(format!("{GOOGLE_CALENDAR_API}/users/me/calendarList"))
-            .bearer_auth(self.access_token()?)
-            .send()
-            .await
-            .context("failed to fetch Google calendar list")?;
-
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .context("failed to read Google calendar list response")?;
-
-        if !status.is_success() {
-            bail!("Google calendar list fetch failed with {status}: {body}");
-        }
-
-        let response: CalendarListResponse =
-            serde_json::from_str(&body).context("failed to parse Google calendar list")?;
-
-        Ok(response
-            .items
+        Ok(self
+            .fetch_calendar_list()
+            .await?
             .into_iter()
             .filter(|calendar| !calendar.deleted)
             .map(|calendar| Calendar {
-                id: calendar.id,
-                provider_id: "google".to_string(),
+                id: format!("{}:{}", self.provider_id, calendar.id),
+                remote_id: calendar.id,
+                provider_id: self.provider_id.clone(),
                 source: CalendarSource::Google,
                 name: calendar.summary,
                 color: calendar
@@ -468,7 +572,7 @@ impl CalendarProvider for GoogleProvider {
             .filter(|event| event.status.as_deref() != Some("cancelled"))
             .map(|event| Event {
                 id: event.id,
-                provider_id: "google".to_string(),
+                provider_id: self.provider_id.clone(),
                 calendar_id: calendar_id.to_string(),
                 title: event.summary.unwrap_or_else(|| "(untitled)".to_string()),
                 description: event.description,

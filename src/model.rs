@@ -60,6 +60,7 @@ impl ProviderCapabilities {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Calendar {
     pub id: String,
+    pub remote_id: String,
     pub provider_id: String,
     pub source: CalendarSource,
     pub name: String,
