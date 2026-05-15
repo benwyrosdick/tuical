@@ -208,7 +208,7 @@ fn draw_month_cell(
     events.sort_by_key(|event| (!event.all_day, event.starts_at));
     let event_line_limit = area.height.saturating_sub(3) as usize;
     let event_width = area.width.saturating_sub(3) as usize;
-    let style = date_style(date, visible_month);
+    let style = month_date_style(date, visible_month, app.selected_date);
 
     let mut lines = vec![Line::from(Span::styled(
         format!("{:>2}", date.day()),
@@ -232,7 +232,11 @@ fn draw_month_cell(
         Block::default()
             .borders(Borders::ALL)
             .style(fill_style)
-            .border_style(month_cell_border_style(date, visible_month)),
+            .border_style(month_cell_border_style(
+                date,
+                visible_month,
+                app.selected_date,
+            )),
     );
     frame.render_widget(cell, area);
 }
@@ -402,8 +406,11 @@ fn draw_help(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else if app.show_event_modal {
         "event: Enter/Esc close | q quit".to_string()
     } else {
-        "views: d day, w week, m month | nav: h/l prev/next, t today | events: j/k select, Enter details | sync: r refresh, L login | C calendars | q quit"
-            .to_string()
+        match app.view {
+            CalendarView::Month => "month: h/j/k/l move day, Enter open day | views: d day, w week | sync: r refresh, L login | C calendars | q quit".to_string(),
+            _ => "views: d day, w week, m month | nav: h/l prev/next, t today | events: j/k select, Enter details | sync: r refresh, L login | C calendars | q quit"
+                .to_string(),
+        }
     };
     let help = Paragraph::new(commands)
         .style(Style::default().fg(Color::Yellow))
@@ -545,6 +552,21 @@ fn date_style(date: chrono::NaiveDate, visible_month: u32) -> Style {
     }
 }
 
+fn month_date_style(
+    date: chrono::NaiveDate,
+    visible_month: u32,
+    selected_date: chrono::NaiveDate,
+) -> Style {
+    if date == selected_date {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        date_style(date, visible_month)
+    }
+}
+
 fn month_header_style(index: usize) -> Style {
     if index == 0 || index == 6 {
         Style::default().fg(Color::Magenta)
@@ -591,8 +613,14 @@ fn month_all_day_event_style(date: chrono::NaiveDate, visible_month: u32) -> Sty
     }
 }
 
-fn month_cell_border_style(date: chrono::NaiveDate, visible_month: u32) -> Style {
-    if date == Local::now().date_naive() {
+fn month_cell_border_style(
+    date: chrono::NaiveDate,
+    visible_month: u32,
+    selected_date: chrono::NaiveDate,
+) -> Style {
+    if date == selected_date {
+        Style::default().fg(Color::Yellow)
+    } else if date == Local::now().date_naive() {
         Style::default().fg(Color::Yellow)
     } else if date.month() == visible_month {
         Style::default().fg(Color::Blue)

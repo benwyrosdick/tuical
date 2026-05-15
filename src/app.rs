@@ -154,16 +154,42 @@ impl App {
                 self.selected_date = Local::now().date_naive();
                 self.refresh_events().await?;
             }
-            KeyCode::Char('j') | KeyCode::Down => self.select_next_event(),
-            KeyCode::Char('k') | KeyCode::Up => self.select_previous_event(),
-            KeyCode::Enter => self.open_selected_event(),
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.view == CalendarView::Month {
+                    self.move_month_selection(7);
+                } else {
+                    self.select_next_event();
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.view == CalendarView::Month {
+                    self.move_month_selection(-7);
+                } else {
+                    self.select_previous_event();
+                }
+            }
+            KeyCode::Enter => {
+                if self.view == CalendarView::Month {
+                    self.change_view_and_queue_refresh(CalendarView::Day)?;
+                } else {
+                    self.open_selected_event();
+                }
+            }
             KeyCode::Char('h') | KeyCode::Left => {
-                self.move_backward();
-                self.refresh_events().await?;
+                if self.view == CalendarView::Month {
+                    self.move_month_selection(-1);
+                } else {
+                    self.move_backward();
+                    self.refresh_events().await?;
+                }
             }
             KeyCode::Char('l') | KeyCode::Right => {
-                self.move_forward();
-                self.refresh_events().await?;
+                if self.view == CalendarView::Month {
+                    self.move_month_selection(1);
+                } else {
+                    self.move_forward();
+                    self.refresh_events().await?;
+                }
             }
             KeyCode::Char('L') => self.login_google().await?,
             KeyCode::Char('r') => self.refresh_events().await?,
@@ -230,6 +256,23 @@ impl App {
                 .checked_add_months(Months::new(1))
                 .unwrap_or(self.selected_date),
         };
+    }
+
+    fn move_month_selection(&mut self, days: i64) {
+        let previous_month = (self.selected_date.year(), self.selected_date.month());
+        self.selected_date = if days.is_negative() {
+            self.selected_date
+                .checked_sub_days(Days::new(days.unsigned_abs()))
+        } else {
+            self.selected_date.checked_add_days(Days::new(days as u64))
+        }
+        .unwrap_or(self.selected_date);
+
+        let current_month = (self.selected_date.year(), self.selected_date.month());
+        if current_month != previous_month {
+            self.loading_message = Some("Loading month ...".to_string());
+            self.pending_event_refresh = true;
+        }
     }
 
     fn change_view(&mut self, view: CalendarView) -> Result<()> {
