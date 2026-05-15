@@ -55,7 +55,7 @@ fn draw_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Line::from(format!(
             "{} calendar(s), {} visible event(s)",
             app.calendars.len(),
-            visible_event_count(app)
+            app.visible_event_count()
         )),
     ])
     .block(Block::default().borders(Borders::ALL));
@@ -523,13 +523,6 @@ fn events_for_date(app: &App, date: chrono::NaiveDate) -> Vec<&Event> {
         .collect();
     events.sort_by_key(|event| event.starts_at);
     events
-}
-
-fn visible_event_count(app: &App) -> usize {
-    app.events
-        .iter()
-        .filter(|event| app.is_calendar_visible(&event.calendar_id))
-        .count()
 }
 
 fn local_midnight_utc(date: chrono::NaiveDate) -> chrono::DateTime<chrono::Utc> {

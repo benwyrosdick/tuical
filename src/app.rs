@@ -26,6 +26,7 @@ pub struct App {
     pub selected_date: chrono::NaiveDate,
     pub calendars: Vec<Calendar>,
     pub events: Vec<Event>,
+    loaded_event_ranges: Vec<TimeRange>,
     pub hidden_calendar_ids: HashSet<String>,
     pub selected_calendar_index: usize,
     pub selected_event_index: usize,
@@ -57,6 +58,7 @@ impl App {
             selected_date: Local::now().date_naive(),
             calendars: Vec::new(),
             events: Vec::new(),
+            loaded_event_ranges: Vec::new(),
             hidden_calendar_ids: settings.hidden_calendar_set(),
             selected_calendar_index: 0,
             selected_event_index: 0,
@@ -100,6 +102,7 @@ impl App {
     async fn load_configured_calendars(&mut self) -> Result<()> {
         self.calendars.clear();
         self.events.clear();
+        self.loaded_event_ranges.clear();
 
         if let Err(error) = self.sync_google().await {
             if self.config.google_is_configured() {
@@ -192,7 +195,10 @@ impl App {
                 }
             }
             KeyCode::Char('L') => self.login_google().await?,
-            KeyCode::Char('r') => self.refresh_events().await?,
+            KeyCode::Char('r') => {
+                self.loaded_event_ranges.clear();
+                self.refresh_events().await?;
+            }
             _ => {}
         }
 
@@ -332,6 +338,15 @@ impl App {
             .map(|calendar| calendar.name.as_str())
     }
 
+    pub fn visible_event_count(&self) -> usize {
+        let range = self.visible_time_range();
+        self.events
+            .iter()
+            .filter(|event| self.is_calendar_visible(&event.calendar_id))
+            .filter(|event| event.starts_at < range.ends_at && event.ends_at > range.starts_at)
+            .count()
+    }
+
     fn select_next_calendar(&mut self) {
         if self.calendars.is_empty() {
             return;
@@ -459,12 +474,24 @@ impl App {
     }
 
     async fn refresh_events(&mut self) -> Result<()> {
-        self.events.clear();
+        let range = self.eager_time_range();
 
-        if let Err(error) = self.sync_google_events().await {
+        if self.is_range_cached(range) {
+            self.status = format!(
+                "Using cached {} event(s) for {}.",
+                self.visible_event_count(),
+                self.view.title().to_lowercase()
+            );
+            self.clamp_event_selection();
+            return Ok(());
+        }
+
+        if let Err(error) = self.sync_google_events(range).await {
             if self.config.google_is_configured() {
                 self.status = format!("Google event refresh failed: {error}");
             }
+        } else {
+            self.loaded_event_ranges.push(range);
         }
 
         self.clamp_event_selection();
@@ -512,28 +539,30 @@ impl App {
         }
 
         store.save(TOKEN_FILE)?;
-        self.sync_google_events().await?;
+        let range = self.eager_time_range();
+        self.sync_google_events(range).await?;
+        self.loaded_event_ranges.push(range);
         self.status = format!(
             "Loaded {} Google account(s), {} calendar(s), and {} event(s). Press r to refresh.",
             store.google.len(),
             google_calendar_count,
-            self.events.len()
+            self.visible_event_count()
         );
 
         Ok(())
     }
 
-    async fn sync_google_events(&mut self) -> Result<()> {
+    async fn sync_google_events(&mut self, range: TimeRange) -> Result<usize> {
         let Some(google_config) = self.config.google.clone() else {
-            return Ok(());
+            return Ok(0);
         };
         let mut store = TokenStore::load(TOKEN_FILE)?;
         if store.google.is_empty() {
-            return Ok(());
+            return Ok(0);
         };
 
         let token_provider = GoogleProvider::new(google_config.clone());
-        let range = self.visible_time_range();
+        let mut fetched_event_count = 0;
 
         for account in &mut store.google {
             if account.tokens.is_expired() {
@@ -558,22 +587,65 @@ impl App {
                     event.calendar_id = calendar.id.clone();
                     event.color = calendar.color.clone();
                 }
-                self.events.extend(events);
+                fetched_event_count += events.len();
+                self.merge_events(events);
             }
         }
 
         store.save(TOKEN_FILE)?;
 
         self.status = format!(
-            "Loaded {} event(s) for {}.",
-            self.events.len(),
+            "Fetched {} event(s), showing {} for {}.",
+            fetched_event_count,
+            self.visible_event_count(),
             self.view.title().to_lowercase()
         );
         self.clamp_event_selection();
-        Ok(())
+        Ok(fetched_event_count)
+    }
+
+    fn merge_events(&mut self, events: Vec<Event>) {
+        for event in events {
+            self.events.retain(|existing| {
+                !(existing.id == event.id
+                    && existing.calendar_id == event.calendar_id
+                    && existing.provider_id == event.provider_id)
+            });
+            self.events.push(event);
+        }
+    }
+
+    fn is_range_cached(&self, range: TimeRange) -> bool {
+        self.loaded_event_ranges.iter().any(|loaded_range| {
+            loaded_range.starts_at <= range.starts_at && loaded_range.ends_at >= range.ends_at
+        })
     }
 
     fn visible_time_range(&self) -> TimeRange {
+        let (starts_on, ends_on) = self.visible_date_bounds();
+
+        TimeRange {
+            starts_at: local_midnight_utc(starts_on),
+            ends_at: local_midnight_utc(ends_on),
+        }
+    }
+
+    fn eager_time_range(&self) -> TimeRange {
+        let (starts_on, ends_on) = self.visible_date_bounds();
+        let eager_starts_on = starts_on
+            .checked_sub_months(Months::new(1))
+            .unwrap_or(starts_on);
+        let eager_ends_on = ends_on
+            .checked_add_months(Months::new(1))
+            .unwrap_or(ends_on);
+
+        TimeRange {
+            starts_at: local_midnight_utc(eager_starts_on),
+            ends_at: local_midnight_utc(eager_ends_on),
+        }
+    }
+
+    fn visible_date_bounds(&self) -> (chrono::NaiveDate, chrono::NaiveDate) {
         let starts_on = match self.view {
             CalendarView::Day => self.selected_date,
             CalendarView::Week => start_of_week(self.selected_date),
@@ -586,10 +658,7 @@ impl App {
         }
         .unwrap_or(starts_on);
 
-        TimeRange {
-            starts_at: local_midnight_utc(starts_on),
-            ends_at: local_midnight_utc(ends_on),
-        }
+        (starts_on, ends_on)
     }
 }
 
