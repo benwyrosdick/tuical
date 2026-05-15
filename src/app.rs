@@ -28,6 +28,7 @@ pub struct App {
     pub events: Vec<Event>,
     pub hidden_calendar_ids: HashSet<String>,
     pub selected_calendar_index: usize,
+    pub show_calendar_modal: bool,
     pub status: String,
     should_quit: bool,
 }
@@ -54,6 +55,7 @@ impl App {
             events: Vec::new(),
             hidden_calendar_ids: settings.hidden_calendar_set(),
             selected_calendar_index: 0,
+            show_calendar_modal: false,
             status,
             should_quit: false,
         }
@@ -113,8 +115,13 @@ impl App {
             return Ok(());
         }
 
+        if self.show_calendar_modal {
+            return self.handle_calendar_modal_key(key.code);
+        }
+
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('C') | KeyCode::Char('c') => self.show_calendar_modal = true,
             KeyCode::Char('d') => {
                 self.view = CalendarView::Day;
                 self.refresh_events().await?;
@@ -131,9 +138,6 @@ impl App {
                 self.selected_date = Local::now().date_naive();
                 self.refresh_events().await?;
             }
-            KeyCode::Char('j') | KeyCode::Down => self.select_next_calendar(),
-            KeyCode::Char('k') | KeyCode::Up => self.select_previous_calendar(),
-            KeyCode::Char(' ') => self.toggle_selected_calendar_visibility()?,
             KeyCode::Char('h') | KeyCode::Left => {
                 self.move_backward();
                 self.refresh_events().await?;
@@ -144,6 +148,21 @@ impl App {
             }
             KeyCode::Char('L') => self.login_google().await?,
             KeyCode::Char('r') => self.refresh_events().await?,
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    fn handle_calendar_modal_key(&mut self, key_code: KeyCode) -> Result<()> {
+        match key_code {
+            KeyCode::Esc | KeyCode::Char('C') | KeyCode::Char('c') => {
+                self.show_calendar_modal = false;
+            }
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('j') | KeyCode::Down => self.select_next_calendar(),
+            KeyCode::Char('k') | KeyCode::Up => self.select_previous_calendar(),
+            KeyCode::Char(' ') => self.toggle_selected_calendar_visibility()?,
             _ => {}
         }
 

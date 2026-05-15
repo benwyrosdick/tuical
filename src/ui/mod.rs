@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Row, Table},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Row, Table},
 };
 
 use crate::{
@@ -18,7 +18,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(8),
-            Constraint::Length(7),
             Constraint::Length(3),
             Constraint::Length(3),
         ])
@@ -26,9 +25,12 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
 
     draw_header(frame, app, vertical[0]);
     draw_current_view(frame, app, vertical[1]);
-    draw_calendars(frame, app, vertical[2]);
-    draw_status(frame, app, vertical[3]);
-    draw_help(frame, app, vertical[4]);
+    draw_status(frame, app, vertical[2]);
+    draw_help(frame, app, vertical[3]);
+
+    if app.show_calendar_modal {
+        draw_calendar_modal(frame, app);
+    }
 }
 
 fn draw_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -302,6 +304,12 @@ fn draw_calendars(frame: &mut Frame<'_>, app: &App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
+fn draw_calendar_modal(frame: &mut Frame<'_>, app: &App) {
+    let area = centered_rect(82, 72, frame.area());
+    frame.render_widget(Clear, area);
+    draw_calendars(frame, app, area);
+}
+
 fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let status = Paragraph::new(app.status.as_str())
         .style(Style::default().fg(Color::Green))
@@ -311,18 +319,44 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn draw_help(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let calendar_help = app
-        .selected_calendar()
-        .map(|calendar| format!("calendar: {} | j/k select | space show/hide", calendar.name))
-        .unwrap_or_else(|| "calendar: none configured".to_string());
-    let commands = format!(
-        "views: d day, w week, m month | nav: h/l prev/next, t today | sync: r refresh, L login | {calendar_help} | q quit"
-    );
+    let commands = if app.show_calendar_modal {
+        app.selected_calendar()
+            .map(|calendar| {
+                format!(
+                    "calendar: {} | j/k select | space show/hide | C or Esc close | q quit",
+                    calendar.name
+                )
+            })
+            .unwrap_or_else(|| "calendar: none configured | C or Esc close | q quit".to_string())
+    } else {
+        "views: d day, w week, m month | nav: h/l prev/next, t today | sync: r refresh, L login | C calendars | q quit"
+            .to_string()
+    };
     let help = Paragraph::new(commands)
         .style(Style::default().fg(Color::Yellow))
         .block(Block::default().title(" Commands ").borders(Borders::ALL));
 
     frame.render_widget(help, area);
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vertical[1])[1]
 }
 
 fn start_of_week(date: chrono::NaiveDate) -> chrono::NaiveDate {
