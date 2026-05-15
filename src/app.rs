@@ -13,10 +13,12 @@ use crate::{
         google::{GoogleProvider, StoredGoogleAccount, TokenStore},
         ical::IcalProvider,
     },
+    settings::AppSettings,
     ui,
 };
 
 const TOKEN_FILE: &str = "tokens.toml";
+const SETTINGS_FILE: &str = "settings.toml";
 
 pub struct App {
     pub config: TuicalConfig,
@@ -31,7 +33,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(config: TuicalConfig) -> Self {
+    pub fn new(config: TuicalConfig, settings: AppSettings) -> Self {
         let status = if config.google_is_configured() {
             format!(
                 "Google configured. Times use {} timezone. Press L to log in with browser OAuth.",
@@ -50,7 +52,7 @@ impl App {
             selected_date: Local::now().date_naive(),
             calendars: Vec::new(),
             events: Vec::new(),
-            hidden_calendar_ids: HashSet::new(),
+            hidden_calendar_ids: settings.hidden_calendar_set(),
             selected_calendar_index: 0,
             status,
             should_quit: false,
@@ -131,7 +133,7 @@ impl App {
             }
             KeyCode::Char('j') | KeyCode::Down => self.select_next_calendar(),
             KeyCode::Char('k') | KeyCode::Up => self.select_previous_calendar(),
-            KeyCode::Char(' ') => self.toggle_selected_calendar_visibility(),
+            KeyCode::Char(' ') => self.toggle_selected_calendar_visibility()?,
             KeyCode::Char('h') | KeyCode::Left => {
                 self.move_backward();
                 self.refresh_events().await?;
@@ -210,10 +212,10 @@ impl App {
         };
     }
 
-    fn toggle_selected_calendar_visibility(&mut self) {
+    fn toggle_selected_calendar_visibility(&mut self) -> Result<()> {
         let Some(calendar) = self.selected_calendar() else {
             self.status = "No calendar selected.".to_string();
-            return;
+            return Ok(());
         };
 
         let calendar_id = calendar.id.clone();
@@ -225,6 +227,13 @@ impl App {
             self.hidden_calendar_ids.insert(calendar_id);
             self.status = format!("Hiding calendar: {calendar_name}");
         }
+
+        self.save_settings()?;
+        Ok(())
+    }
+
+    fn save_settings(&self) -> Result<()> {
+        AppSettings::from_hidden_calendar_ids(&self.hidden_calendar_ids).save(SETTINGS_FILE)
     }
 
     fn clamp_calendar_selection(&mut self) {

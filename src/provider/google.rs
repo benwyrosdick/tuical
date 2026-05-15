@@ -260,11 +260,12 @@ impl TokenStore {
         fs::write(path, contents).context("failed to write token store")
     }
 
-    pub fn upsert_google_account(&mut self, account: StoredGoogleAccount) {
+    pub fn upsert_google_account(&mut self, mut account: StoredGoogleAccount) {
         if let Some(primary_calendar_id) = account.primary_calendar_id.as_deref() {
             if let Some(existing) = self.google.iter_mut().find(|existing| {
                 existing.primary_calendar_id.as_deref() == Some(primary_calendar_id)
             }) {
+                account.id = existing.id.clone();
                 *existing = account;
                 return;
             }

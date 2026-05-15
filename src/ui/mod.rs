@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Row, Table},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Row, Table},
 };
 
 use crate::{
@@ -265,11 +265,6 @@ fn draw_calendars(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 } else {
                     "[ ]"
                 };
-                let selected = if index == app.selected_calendar_index {
-                    ">"
-                } else {
-                    " "
-                };
                 let style = if index == app.selected_calendar_index {
                     Style::default().add_modifier(Modifier::REVERSED)
                 } else if app.is_calendar_visible(&calendar.id) {
@@ -279,7 +274,7 @@ fn draw_calendars(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 };
 
                 ListItem::new(Line::from(format!(
-                    "{selected} {marker} {} [{}] {} ({access})",
+                    "{marker} {} [{}] {} ({access})",
                     calendar.name, calendar.provider_id, calendar.color
                 )))
                 .style(style)
@@ -287,8 +282,24 @@ fn draw_calendars(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .collect()
     };
 
-    let list = List::new(items).block(Block::default().title(" Calendars ").borders(Borders::ALL));
-    frame.render_widget(list, area);
+    let title = if app.calendars.is_empty() {
+        " Calendars ".to_string()
+    } else {
+        let selected = app.selected_calendar_index.min(app.calendars.len() - 1);
+        format!(" Calendars {}/{} ", selected + 1, app.calendars.len())
+    };
+
+    let list = List::new(items)
+        .block(Block::default().title(title).borders(Borders::ALL))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("> ");
+    let mut state = ListState::default().with_selected(if app.calendars.is_empty() {
+        None
+    } else {
+        Some(app.selected_calendar_index.min(app.calendars.len() - 1))
+    });
+
+    frame.render_stateful_widget(list, area, &mut state);
 }
 
 fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
