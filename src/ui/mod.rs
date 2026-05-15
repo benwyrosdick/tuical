@@ -274,10 +274,11 @@ fn draw_calendars(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 } else {
                     "[ ]"
                 };
+                let calendar_style = calendar_color_style(&calendar.color);
                 let style = if index == app.selected_calendar_index {
-                    Style::default().add_modifier(Modifier::REVERSED)
+                    selected_calendar_style(&calendar.color)
                 } else if app.is_calendar_visible(&calendar.id) {
-                    Style::default()
+                    calendar_style
                 } else {
                     Style::default().fg(Color::DarkGray)
                 };
@@ -505,10 +506,50 @@ fn selectable_event_style(app: &App, event: &Event) -> Style {
             .bg(Color::Yellow)
             .add_modifier(Modifier::BOLD)
     } else if event.all_day {
-        Style::default().fg(Color::Magenta)
+        calendar_color_style(&event.color).add_modifier(Modifier::BOLD)
     } else {
-        Style::default()
+        calendar_color_style(&event.color)
     }
+}
+
+fn calendar_color_style(color: &str) -> Style {
+    Style::default().fg(parse_calendar_color(color))
+}
+
+fn parse_calendar_color(color: &str) -> Color {
+    let color = color.trim();
+    match color.to_ascii_lowercase().as_str() {
+        "black" => Color::Black,
+        "red" => Color::Red,
+        "green" => Color::Green,
+        "yellow" => Color::Yellow,
+        "blue" => Color::Blue,
+        "magenta" | "purple" => Color::Magenta,
+        "cyan" => Color::Cyan,
+        "gray" | "grey" => Color::Gray,
+        "darkgray" | "dark_gray" | "dark-grey" => Color::DarkGray,
+        "white" => Color::White,
+        _ => parse_hex_color(color).unwrap_or(Color::White),
+    }
+}
+
+fn selected_calendar_style(color: &str) -> Style {
+    Style::default()
+        .fg(Color::Black)
+        .bg(parse_calendar_color(color))
+        .add_modifier(Modifier::BOLD)
+}
+
+fn parse_hex_color(color: &str) -> Option<Color> {
+    let hex = color.strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+
+    let red = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let green = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let blue = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some(Color::Rgb(red, green, blue))
 }
 
 fn events_for_date(app: &App, date: chrono::NaiveDate) -> Vec<&Event> {
@@ -578,9 +619,9 @@ fn month_cell_fill_style(date: chrono::NaiveDate, visible_month: u32) -> Style {
     Style::default().bg(background)
 }
 
-fn month_event_style(date: chrono::NaiveDate, visible_month: u32) -> Style {
+fn month_event_style(event: &Event, date: chrono::NaiveDate, visible_month: u32) -> Style {
     if date.month() == visible_month {
-        Style::default()
+        calendar_color_style(&event.color)
     } else {
         Style::default().fg(Color::DarkGray)
     }
@@ -596,11 +637,9 @@ fn month_event_time_style(date: chrono::NaiveDate, visible_month: u32) -> Style 
     }
 }
 
-fn month_all_day_event_style(date: chrono::NaiveDate, visible_month: u32) -> Style {
+fn month_all_day_event_style(event: &Event, date: chrono::NaiveDate, visible_month: u32) -> Style {
     if date.month() == visible_month {
-        Style::default()
-            .fg(Color::Magenta)
-            .add_modifier(Modifier::BOLD)
+        calendar_color_style(&event.color).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     }
@@ -665,7 +704,7 @@ fn month_event_line(
     if event.all_day {
         return Line::from(Span::styled(
             truncate(&event.title, max_chars),
-            month_all_day_event_style(date, visible_month),
+            month_all_day_event_style(event, date, visible_month),
         ));
     }
 
@@ -677,7 +716,7 @@ fn month_event_line(
         Span::raw(" "),
         Span::styled(
             truncate(&event.title, title_width),
-            month_event_style(date, visible_month),
+            month_event_style(event, date, visible_month),
         ),
     ])
 }
