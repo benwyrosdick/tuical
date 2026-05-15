@@ -30,6 +30,7 @@ pub struct App {
     pub selected_calendar_index: usize,
     pub show_calendar_modal: bool,
     pub loading_message: Option<String>,
+    pending_event_refresh: bool,
     pub status: String,
     should_quit: bool,
 }
@@ -58,6 +59,7 @@ impl App {
             selected_calendar_index: 0,
             show_calendar_modal: false,
             loading_message: None,
+            pending_event_refresh: false,
             status,
             should_quit: false,
         }
@@ -76,8 +78,15 @@ impl App {
         while !self.should_quit {
             terminal.draw(|frame| ui::draw(frame, self))?;
 
+            if self.pending_event_refresh {
+                self.pending_event_refresh = false;
+                self.refresh_events().await?;
+                self.loading_message = None;
+                continue;
+            }
+
             if event::poll(Duration::from_millis(100))? {
-                self.handle_event(event::read()?, terminal).await?;
+                self.handle_event(event::read()?).await?;
             }
         }
 
@@ -108,11 +117,7 @@ impl App {
         Ok(())
     }
 
-    async fn handle_event(
-        &mut self,
-        event: TerminalEvent,
-        terminal: &mut DefaultTerminal,
-    ) -> Result<()> {
+    async fn handle_event(&mut self, event: TerminalEvent) -> Result<()> {
         let TerminalEvent::Key(key) = event else {
             return Ok(());
         };
@@ -129,16 +134,13 @@ impl App {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('C') | KeyCode::Char('c') => self.show_calendar_modal = true,
             KeyCode::Char('d') => {
-                self.change_view_and_refresh(CalendarView::Day, terminal)
-                    .await?;
+                self.change_view_and_queue_refresh(CalendarView::Day)?;
             }
             KeyCode::Char('w') => {
-                self.change_view_and_refresh(CalendarView::Week, terminal)
-                    .await?;
+                self.change_view_and_queue_refresh(CalendarView::Week)?;
             }
             KeyCode::Char('m') => {
-                self.change_view_and_refresh(CalendarView::Month, terminal)
-                    .await?;
+                self.change_view_and_queue_refresh(CalendarView::Month)?;
             }
             KeyCode::Char('t') => {
                 self.selected_date = Local::now().date_naive();
@@ -214,17 +216,11 @@ impl App {
         self.save_settings()
     }
 
-    async fn change_view_and_refresh(
-        &mut self,
-        view: CalendarView,
-        terminal: &mut DefaultTerminal,
-    ) -> Result<()> {
+    fn change_view_and_queue_refresh(&mut self, view: CalendarView) -> Result<()> {
         self.change_view(view)?;
         self.loading_message = Some(format!("Loading {} ...", view.title().to_lowercase()));
-        terminal.draw(|frame| ui::draw(frame, self))?;
-        let result = self.refresh_events().await;
-        self.loading_message = None;
-        result
+        self.pending_event_refresh = true;
+        Ok(())
     }
 
     pub fn is_calendar_visible(&self, calendar_id: &str) -> bool {
