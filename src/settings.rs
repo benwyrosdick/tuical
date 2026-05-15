@@ -3,10 +3,14 @@ use std::{collections::HashSet, fs, path::Path};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::model::CalendarView;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppSettings {
     #[serde(default)]
     pub hidden_calendar_ids: Vec<String>,
+    #[serde(default)]
+    pub last_view: Option<CalendarView>,
 }
 
 impl AppSettings {
@@ -31,11 +35,12 @@ impl AppSettings {
         self.hidden_calendar_ids.iter().cloned().collect()
     }
 
-    pub fn from_hidden_calendar_ids(hidden_calendar_ids: &HashSet<String>) -> Self {
+    pub fn from_app_state(hidden_calendar_ids: &HashSet<String>, last_view: CalendarView) -> Self {
         let mut hidden_calendar_ids: Vec<String> = hidden_calendar_ids.iter().cloned().collect();
         hidden_calendar_ids.sort();
         Self {
             hidden_calendar_ids,
+            last_view: Some(last_view),
         }
     }
 }

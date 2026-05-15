@@ -31,6 +31,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
     if app.show_calendar_modal {
         draw_calendar_modal(frame, app);
     }
+
+    if app.loading_message.is_some() {
+        draw_loading_modal(frame, app);
+    }
 }
 
 fn draw_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -304,6 +308,21 @@ fn draw_calendar_modal(frame: &mut Frame<'_>, app: &App) {
     let area = centered_rect(82, 72, frame.area());
     frame.render_widget(Clear, area);
     draw_calendars(frame, app, area);
+}
+
+fn draw_loading_modal(frame: &mut Frame<'_>, app: &App) {
+    let area = centered_rect(36, 18, frame.area());
+    frame.render_widget(Clear, area);
+    let message = app.loading_message.as_deref().unwrap_or("Loading ...");
+    let modal = Paragraph::new(message)
+        .style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+        .alignment(Alignment::Center)
+        .block(Block::default().title(" Loading ").borders(Borders::ALL));
+    frame.render_widget(modal, area);
 }
 
 fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
