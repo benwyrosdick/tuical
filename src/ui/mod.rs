@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Row, Table},
+    widgets::{Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table},
 };
 
 use crate::{
@@ -30,6 +30,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
 
     if app.show_calendar_modal {
         draw_calendar_modal(frame, app);
+    }
+
+    if app.show_event_modal {
+        draw_event_modal(frame, app);
     }
 
     if app.loading_message.is_some() {
@@ -73,16 +77,15 @@ fn draw_day(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let rows = (0..24).map(|hour| {
         let events = events_for_hour(app, hour);
         let summary = if events.is_empty() {
-            String::new()
+            Line::from("")
         } else {
-            events
-                .into_iter()
-                .map(format_event)
-                .collect::<Vec<_>>()
-                .join(" | ")
+            event_summary_line(app, events)
         };
 
-        let row = Row::new(vec![format!("{hour:02}:00"), summary]);
+        let row = Row::new(vec![
+            Cell::from(format!("{hour:02}:00")),
+            Cell::from(summary),
+        ]);
         if is_today && hour == now.hour() {
             row.style(
                 Style::default()
@@ -128,7 +131,7 @@ fn draw_week(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 events
                     .into_iter()
                     .take(5)
-                    .map(|event| Line::from(format!("  {}", format_event(event)))),
+                    .map(|event| event_detail_line(app, event, "  ")),
             );
         }
 
@@ -325,6 +328,59 @@ fn draw_loading_modal(frame: &mut Frame<'_>, app: &App) {
     frame.render_widget(modal, area);
 }
 
+fn draw_event_modal(frame: &mut Frame<'_>, app: &App) {
+    let area = centered_rect(62, 48, frame.area());
+    frame.render_widget(Clear, area);
+
+    let Some(event) = app.selected_event() else {
+        return;
+    };
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            event.title.clone(),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(format!("When: {}", format_event_range(event))),
+        Line::from(format!(
+            "Calendar: {}",
+            app.calendar_name(&event.calendar_id).unwrap_or("unknown")
+        )),
+    ];
+
+    if let Some(location) = event
+        .location
+        .as_deref()
+        .filter(|location| !location.is_empty())
+    {
+        lines.push(Line::from(format!("Location: {location}")));
+    }
+
+    if let Some(description) = event
+        .description
+        .as_deref()
+        .filter(|description| !description.is_empty())
+    {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Description",
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+        lines.extend(description.lines().take(8).map(Line::from));
+    }
+
+    let modal = Paragraph::new(lines).block(
+        Block::default()
+            .title(" Event ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow)),
+    );
+    frame.render_widget(modal, area);
+}
+
 fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let status = Paragraph::new(app.status.as_str())
         .style(Style::default().fg(Color::Green))
@@ -343,8 +399,10 @@ fn draw_help(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 )
             })
             .unwrap_or_else(|| "calendar: none configured | C or Esc close | q quit".to_string())
+    } else if app.show_event_modal {
+        "event: Enter/Esc close | q quit".to_string()
     } else {
-        "views: d day, w week, m month | nav: h/l prev/next, t today | sync: r refresh, L login | C calendars | q quit"
+        "views: d day, w week, m month | nav: h/l prev/next, t today | events: j/k select, Enter details | sync: r refresh, L login | C calendars | q quit"
             .to_string()
     };
     let help = Paragraph::new(commands)
@@ -403,6 +461,43 @@ fn events_for_hour(app: &App, hour: u32) -> Vec<&Event> {
             (event.all_day && hour == 0) || event.starts_at.with_timezone(&Local).hour() == hour
         })
         .collect()
+}
+
+fn event_summary_line(app: &App, events: Vec<&Event>) -> Line<'static> {
+    let mut spans = Vec::new();
+
+    for (index, event) in events.into_iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+        }
+
+        spans.push(Span::styled(
+            format_event(event),
+            selectable_event_style(app, event),
+        ));
+    }
+
+    Line::from(spans)
+}
+
+fn event_detail_line(app: &App, event: &Event, prefix: &'static str) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("{prefix}{}", format_event(event)),
+        selectable_event_style(app, event),
+    ))
+}
+
+fn selectable_event_style(app: &App, event: &Event) -> Style {
+    if app.is_event_selected(event) {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else if event.all_day {
+        Style::default().fg(Color::Magenta)
+    } else {
+        Style::default()
+    }
 }
 
 fn events_for_date(app: &App, date: chrono::NaiveDate) -> Vec<&Event> {
@@ -510,6 +605,30 @@ fn format_event(event: &Event) -> String {
     };
 
     format!("{time} {}", event.title)
+}
+
+fn format_event_range(event: &Event) -> String {
+    let starts_at = event.starts_at.with_timezone(&Local);
+    let ends_at = event.ends_at.with_timezone(&Local);
+
+    if event.all_day {
+        return starts_at.format("%a %Y-%m-%d all day").to_string();
+    }
+
+    if starts_at.date_naive() == ends_at.date_naive() {
+        format!(
+            "{} {}-{}",
+            starts_at.format("%a %Y-%m-%d"),
+            starts_at.format("%H:%M"),
+            ends_at.format("%H:%M")
+        )
+    } else {
+        format!(
+            "{} to {}",
+            starts_at.format("%a %Y-%m-%d %H:%M"),
+            ends_at.format("%a %Y-%m-%d %H:%M")
+        )
+    }
 }
 
 fn month_event_line(

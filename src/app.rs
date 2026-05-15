@@ -28,7 +28,9 @@ pub struct App {
     pub events: Vec<Event>,
     pub hidden_calendar_ids: HashSet<String>,
     pub selected_calendar_index: usize,
+    pub selected_event_index: usize,
     pub show_calendar_modal: bool,
+    pub show_event_modal: bool,
     pub loading_message: Option<String>,
     pending_event_refresh: bool,
     pub status: String,
@@ -57,7 +59,9 @@ impl App {
             events: Vec::new(),
             hidden_calendar_ids: settings.hidden_calendar_set(),
             selected_calendar_index: 0,
+            selected_event_index: 0,
             show_calendar_modal: false,
+            show_event_modal: false,
             loading_message: None,
             pending_event_refresh: false,
             status,
@@ -130,6 +134,10 @@ impl App {
             return self.handle_calendar_modal_key(key.code);
         }
 
+        if self.show_event_modal {
+            return self.handle_event_modal_key(key.code);
+        }
+
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('C') | KeyCode::Char('c') => self.show_calendar_modal = true,
@@ -146,6 +154,9 @@ impl App {
                 self.selected_date = Local::now().date_naive();
                 self.refresh_events().await?;
             }
+            KeyCode::Char('j') | KeyCode::Down => self.select_next_event(),
+            KeyCode::Char('k') | KeyCode::Up => self.select_previous_event(),
+            KeyCode::Enter => self.open_selected_event(),
             KeyCode::Char('h') | KeyCode::Left => {
                 self.move_backward();
                 self.refresh_events().await?;
@@ -156,6 +167,16 @@ impl App {
             }
             KeyCode::Char('L') => self.login_google().await?,
             KeyCode::Char('r') => self.refresh_events().await?,
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    fn handle_event_modal_key(&mut self, key_code: KeyCode) -> Result<()> {
+        match key_code {
+            KeyCode::Esc | KeyCode::Enter => self.show_event_modal = false,
+            KeyCode::Char('q') => self.should_quit = true,
             _ => {}
         }
 
@@ -231,6 +252,43 @@ impl App {
         self.calendars.get(self.selected_calendar_index)
     }
 
+    pub fn selectable_events(&self) -> Vec<&Event> {
+        if !matches!(self.view, CalendarView::Day | CalendarView::Week) {
+            return Vec::new();
+        }
+
+        let range = self.visible_time_range();
+        let mut events: Vec<&Event> = self
+            .events
+            .iter()
+            .filter(|event| self.is_calendar_visible(&event.calendar_id))
+            .filter(|event| event.starts_at < range.ends_at && event.ends_at > range.starts_at)
+            .collect();
+        events.sort_by_key(|event| (event.starts_at, event.ends_at, event.title.clone()));
+        events
+    }
+
+    pub fn selected_event(&self) -> Option<&Event> {
+        self.selectable_events()
+            .get(self.selected_event_index)
+            .copied()
+    }
+
+    pub fn is_event_selected(&self, event: &Event) -> bool {
+        self.selected_event().is_some_and(|selected| {
+            selected.id == event.id
+                && selected.calendar_id == event.calendar_id
+                && selected.provider_id == event.provider_id
+        })
+    }
+
+    pub fn calendar_name(&self, calendar_id: &str) -> Option<&str> {
+        self.calendars
+            .iter()
+            .find(|calendar| calendar.id == calendar_id)
+            .map(|calendar| calendar.name.as_str())
+    }
+
     fn select_next_calendar(&mut self) {
         if self.calendars.is_empty() {
             return;
@@ -251,6 +309,38 @@ impl App {
         };
     }
 
+    fn select_next_event(&mut self) {
+        let event_count = self.selectable_events().len();
+        if event_count == 0 {
+            self.status = "No selectable event in this view.".to_string();
+            return;
+        }
+
+        self.selected_event_index = (self.selected_event_index + 1) % event_count;
+    }
+
+    fn select_previous_event(&mut self) {
+        let event_count = self.selectable_events().len();
+        if event_count == 0 {
+            self.status = "No selectable event in this view.".to_string();
+            return;
+        }
+
+        self.selected_event_index = if self.selected_event_index == 0 {
+            event_count - 1
+        } else {
+            self.selected_event_index - 1
+        };
+    }
+
+    fn open_selected_event(&mut self) {
+        if self.selected_event().is_some() {
+            self.show_event_modal = true;
+        } else {
+            self.status = "No event selected.".to_string();
+        }
+    }
+
     fn toggle_selected_calendar_visibility(&mut self) -> Result<()> {
         let Some(calendar) = self.selected_calendar() else {
             self.status = "No calendar selected.".to_string();
@@ -268,6 +358,7 @@ impl App {
         }
 
         self.save_settings()?;
+        self.clamp_event_selection();
         Ok(())
     }
 
@@ -280,6 +371,16 @@ impl App {
             self.selected_calendar_index = 0;
         } else if self.selected_calendar_index >= self.calendars.len() {
             self.selected_calendar_index = self.calendars.len() - 1;
+        }
+    }
+
+    fn clamp_event_selection(&mut self) {
+        let event_count = self.selectable_events().len();
+        if event_count == 0 {
+            self.selected_event_index = 0;
+            self.show_event_modal = false;
+        } else if self.selected_event_index >= event_count {
+            self.selected_event_index = event_count - 1;
         }
     }
 
@@ -322,6 +423,8 @@ impl App {
                 self.status = format!("Google event refresh failed: {error}");
             }
         }
+
+        self.clamp_event_selection();
 
         Ok(())
     }
@@ -423,6 +526,7 @@ impl App {
             self.events.len(),
             self.view.title().to_lowercase()
         );
+        self.clamp_event_selection();
         Ok(())
     }
 
