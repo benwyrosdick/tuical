@@ -142,7 +142,7 @@ fn draw_month(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let Some(first_day) = app.selected_date.with_day(1) else {
         return;
     };
-    let month_start = start_of_week(first_day);
+    let month_start = start_of_month_grid(first_day);
 
     let block = Block::default()
         .title(format!(" Month: {} ", app.selected_date.format("%B %Y")))
@@ -179,16 +179,12 @@ fn draw_month(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
 fn draw_month_weekday_header(frame: &mut Frame<'_>, area: Rect) {
     let cells = split_week_row(area);
-    for (index, label) in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    for (index, label) in ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
         .iter()
         .enumerate()
     {
         let header = Paragraph::new(*label)
-            .style(
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )
+            .style(month_header_style(index).add_modifier(Modifier::BOLD))
             .alignment(Alignment::Center);
         frame.render_widget(header, cells[index]);
     }
@@ -201,7 +197,8 @@ fn draw_month_cell(
     date: chrono::NaiveDate,
     visible_month: u32,
 ) {
-    let events = events_for_date(app, date);
+    let mut events = events_for_date(app, date);
+    events.sort_by_key(|event| (!event.all_day, event.starts_at));
     let event_line_limit = area.height.saturating_sub(3) as usize;
     let event_width = area.width.saturating_sub(3) as usize;
     let style = date_style(date, visible_month);
@@ -212,10 +209,7 @@ fn draw_month_cell(
     ))];
 
     for event in events.iter().take(event_line_limit) {
-        lines.push(Line::from(Span::styled(
-            truncate(&event.title, event_width),
-            month_event_style(date, visible_month),
-        )));
+        lines.push(month_event_line(event, event_width, date, visible_month));
     }
 
     let hidden_count = events.len().saturating_sub(event_line_limit);
@@ -226,9 +220,11 @@ fn draw_month_cell(
         )));
     }
 
-    let cell = Paragraph::new(lines).block(
+    let fill_style = month_cell_fill_style(date, visible_month);
+    let cell = Paragraph::new(lines).style(fill_style).block(
         Block::default()
             .borders(Borders::ALL)
+            .style(fill_style)
             .border_style(month_cell_border_style(date, visible_month)),
     );
     frame.render_widget(cell, area);
@@ -364,6 +360,11 @@ fn start_of_week(date: chrono::NaiveDate) -> chrono::NaiveDate {
         .unwrap_or(date)
 }
 
+fn start_of_month_grid(date: chrono::NaiveDate) -> chrono::NaiveDate {
+    date.checked_sub_days(Days::new(date.weekday().num_days_from_sunday().into()))
+        .unwrap_or(date)
+}
+
 fn weekday_label(weekday: Weekday) -> &'static str {
     match weekday {
         Weekday::Mon => "Mon",
@@ -426,9 +427,47 @@ fn date_style(date: chrono::NaiveDate, visible_month: u32) -> Style {
     }
 }
 
+fn month_header_style(index: usize) -> Style {
+    if index == 0 || index == 6 {
+        Style::default().fg(Color::Magenta)
+    } else {
+        Style::default().fg(Color::Yellow)
+    }
+}
+
+fn month_cell_fill_style(date: chrono::NaiveDate, visible_month: u32) -> Style {
+    let background = if date.month() != visible_month {
+        Color::Rgb(10, 10, 14)
+    } else {
+        Color::Rgb(16, 20, 28)
+    };
+
+    Style::default().bg(background)
+}
+
 fn month_event_style(date: chrono::NaiveDate, visible_month: u32) -> Style {
     if date.month() == visible_month {
         Style::default()
+    } else {
+        Style::default().fg(Color::DarkGray)
+    }
+}
+
+fn month_event_time_style(date: chrono::NaiveDate, visible_month: u32) -> Style {
+    if date.month() == visible_month {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    }
+}
+
+fn month_all_day_event_style(date: chrono::NaiveDate, visible_month: u32) -> Style {
+    if date.month() == visible_month {
+        Style::default()
+            .fg(Color::Magenta)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     }
@@ -452,6 +491,49 @@ fn format_event(event: &Event) -> String {
     };
 
     format!("{time} {}", event.title)
+}
+
+fn month_event_line(
+    event: &Event,
+    max_chars: usize,
+    date: chrono::NaiveDate,
+    visible_month: u32,
+) -> Line<'static> {
+    if event.all_day {
+        return Line::from(Span::styled(
+            truncate(&event.title, max_chars),
+            month_all_day_event_style(date, visible_month),
+        ));
+    }
+
+    let time = short_time(event);
+    let title_width = max_chars.saturating_sub(time.chars().count() + 1);
+
+    Line::from(vec![
+        Span::styled(time, month_event_time_style(date, visible_month)),
+        Span::raw(" "),
+        Span::styled(
+            truncate(&event.title, title_width),
+            month_event_style(date, visible_month),
+        ),
+    ])
+}
+
+fn short_time(event: &Event) -> String {
+    let starts_at = event.starts_at.with_timezone(&Local);
+    let hour = starts_at.hour();
+    let minute = starts_at.minute();
+    let suffix = if hour < 12 { "a" } else { "p" };
+    let hour = match hour % 12 {
+        0 => 12,
+        hour => hour,
+    };
+
+    if minute == 0 {
+        format!("{hour}{suffix}")
+    } else {
+        format!("{hour}:{minute:02}{suffix}")
+    }
 }
 
 fn truncate(value: &str, max_chars: usize) -> String {
