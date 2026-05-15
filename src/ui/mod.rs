@@ -458,7 +458,11 @@ fn events_for_hour(app: &App, hour: u32) -> Vec<&Event> {
     events_for_date(app, app.selected_date)
         .into_iter()
         .filter(|event| {
-            (event.all_day && hour == 0) || event.starts_at.with_timezone(&Local).hour() == hour
+            if event.all_day {
+                hour == 0
+            } else {
+                event.starts_at.with_timezone(&Local).hour() == hour
+            }
         })
         .collect()
 }

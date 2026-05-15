@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone, Utc};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
@@ -403,13 +403,17 @@ struct GoogleEventTime {
 impl GoogleEventTime {
     fn as_utc(&self) -> DateTime<Utc> {
         self.date_time
-            .or_else(|| {
-                self.date
-                    .and_then(|date| date.and_hms_opt(0, 0, 0))
-                    .map(|date_time| date_time.and_utc())
-            })
+            .or_else(|| self.date.map(local_all_day_midnight_utc))
             .unwrap_or_else(Utc::now)
     }
+}
+
+fn local_all_day_midnight_utc(date: NaiveDate) -> DateTime<Utc> {
+    Local
+        .with_ymd_and_hms(date.year(), date.month(), date.day(), 0, 0, 0)
+        .single()
+        .map(|local| local.with_timezone(&Utc))
+        .unwrap_or_else(|| date.and_hms_opt(0, 0, 0).unwrap().and_utc())
 }
 
 async fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Result<String> {
