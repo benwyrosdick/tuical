@@ -3,7 +3,7 @@ use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table},
 };
 
@@ -74,8 +74,10 @@ fn draw_current_view(frame: &mut Frame<'_>, app: &App, area: Rect) {
 fn draw_day(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let now = Local::now();
     let is_today = app.selected_date == now.date_naive();
-    let rows = (0..24).map(|hour| {
-        let events = events_for_hour(app, hour);
+    let rows = (0..48).map(|slot| {
+        let hour = slot / 2;
+        let minute = if slot % 2 == 0 { 0 } else { 30 };
+        let events = events_for_day_slot(app, hour, minute);
         let summary = if events.is_empty() {
             Line::from("")
         } else {
@@ -83,10 +85,10 @@ fn draw_day(frame: &mut Frame<'_>, app: &App, area: Rect) {
         };
 
         let row = Row::new(vec![
-            Cell::from(format!("{hour:02}:00")),
+            Cell::from(format_day_slot_label(hour, minute)),
             Cell::from(summary),
         ]);
-        if is_today && hour == now.hour() {
+        if is_today && hour == now.hour() && minute == current_half_hour(now.minute()) {
             row.style(
                 Style::default()
                     .fg(Color::Yellow)
@@ -110,39 +112,143 @@ fn draw_day(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
 fn draw_week(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let week_start = start_of_week(app.selected_date);
-    let days = (0..7).map(|offset| {
-        let date = week_start
-            .checked_add_days(Days::new(offset))
-            .unwrap_or(week_start);
-        let date_style = date_style(date, app.selected_date.month());
-        let mut lines = vec![Line::from(vec![
-            Span::styled(
-                format!("{} ", weekday_label(date.weekday())),
-                date_style.add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(date.format("%Y-%m-%d").to_string(), date_style),
-        ])];
+    let week_days: Vec<chrono::NaiveDate> = (0..7)
+        .map(|offset| {
+            week_start
+                .checked_add_days(Days::new(offset))
+                .unwrap_or(week_start)
+        })
+        .collect();
 
-        let events = events_for_date(app, date);
-        if events.is_empty() {
-            lines.push(Line::from("  no events"));
+    let block = Block::default()
+        .title(format!(" Week: {} ", week_start.format("%Y-%m-%d")))
+        .borders(Borders::ALL);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(7),
+            Constraint::Percentage(13),
+            Constraint::Percentage(14),
+            Constraint::Percentage(14),
+            Constraint::Percentage(14),
+            Constraint::Percentage(14),
+            Constraint::Percentage(14),
+            Constraint::Percentage(13),
+        ])
+        .split(inner);
+
+    draw_week_time_column(frame, columns[0], &week_days);
+    for (index, date) in week_days.iter().enumerate() {
+        draw_week_day_column(frame, app, columns[index + 1], *date);
+    }
+}
+
+fn draw_week_time_column(frame: &mut Frame<'_>, area: Rect, week_days: &[chrono::NaiveDate]) {
+    let now = Local::now();
+    let row_height = week_hour_row_height(area);
+    let rows = (0..24).map(|hour| {
+        let row = Row::new(vec![format_hour_label(hour)]).height(row_height);
+        if week_days.contains(&now.date_naive()) && hour == now.hour() {
+            row.style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
         } else {
-            lines.extend(
-                events
-                    .into_iter()
-                    .take(5)
-                    .map(|event| event_detail_line(app, event, "  ")),
-            );
+            row
         }
-
-        ListItem::new(lines)
     });
 
-    let list = List::new(days)
-        .block(Block::default().title(" Week ").borders(Borders::ALL))
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    let table = Table::new(rows, [Constraint::Length(5)]).block(
+        Block::default()
+            .title(" Time ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
+    frame.render_widget(table, area);
+}
 
-    frame.render_widget(list, area);
+fn draw_week_day_column(frame: &mut Frame<'_>, app: &App, area: Rect, date: chrono::NaiveDate) {
+    let now = Local::now();
+    let row_height = week_hour_row_height(area);
+    let content_width = area.width.saturating_sub(2) as usize;
+    let rows = (0..24).map(|hour| {
+        let events = events_for_date_hour(app, date, hour);
+        let cell = if events.is_empty() {
+            Cell::from("")
+        } else {
+            Cell::from(week_event_cell_text(
+                app,
+                events,
+                content_width,
+                row_height as usize,
+            ))
+        };
+        let row = Row::new(vec![cell]).height(row_height);
+        if date == now.date_naive() && hour == now.hour() {
+            row.style(Style::default().fg(Color::Yellow))
+        } else {
+            row
+        }
+    });
+
+    let title = format!(
+        " {} {} ",
+        weekday_label(date.weekday()),
+        date.format("%-m/%-d")
+    );
+    let table = Table::new(rows, [Constraint::Percentage(100)]).block(
+        Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(week_column_border_style(date, app.selected_date)),
+    );
+
+    frame.render_widget(table, area);
+}
+
+fn week_hour_row_height(area: Rect) -> u16 {
+    area.height
+        .saturating_sub(2)
+        .checked_div(24)
+        .unwrap_or(1)
+        .clamp(1, 3)
+}
+
+fn week_column_border_style(date: chrono::NaiveDate, selected_date: chrono::NaiveDate) -> Style {
+    if date == selected_date {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        week_header_style(date)
+    }
+}
+
+fn week_header_style(date: chrono::NaiveDate) -> Style {
+    if date == Local::now().date_naive() {
+        Style::default().fg(Color::Yellow)
+    } else if matches!(date.weekday(), Weekday::Sat | Weekday::Sun) {
+        Style::default().fg(Color::Magenta)
+    } else {
+        Style::default().fg(Color::Cyan)
+    }
+}
+
+fn events_for_date_hour(app: &App, date: chrono::NaiveDate, hour: u32) -> Vec<&Event> {
+    events_for_date(app, date)
+        .into_iter()
+        .filter(|event| {
+            if event.all_day {
+                hour == 0
+            } else {
+                event.starts_at.with_timezone(&Local).hour() == hour
+            }
+        })
+        .collect()
 }
 
 fn draw_month(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -409,6 +515,7 @@ fn draw_help(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else {
         match app.view {
             CalendarView::Month => "month: h/j/k/l move day, Enter open day | views: d day, w week | sync: r refresh, L login | C calendars | q quit".to_string(),
+            CalendarView::Week => "week: h/l move day, j/k select event in day, Enter details | views: d day, m month | sync: r refresh, L login | C calendars | q quit".to_string(),
             _ => "views: d day, w week, m month | nav: h/l prev/next, t today | events: j/k select, Enter details | sync: r refresh, L login | C calendars | q quit"
                 .to_string(),
         }
@@ -441,7 +548,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 }
 
 fn start_of_week(date: chrono::NaiveDate) -> chrono::NaiveDate {
-    date.checked_sub_days(Days::new(date.weekday().num_days_from_monday().into()))
+    date.checked_sub_days(Days::new(date.weekday().num_days_from_sunday().into()))
         .unwrap_or(date)
 }
 
@@ -462,17 +569,22 @@ fn weekday_label(weekday: Weekday) -> &'static str {
     }
 }
 
-fn events_for_hour(app: &App, hour: u32) -> Vec<&Event> {
+fn events_for_day_slot(app: &App, hour: u32, minute: u32) -> Vec<&Event> {
     events_for_date(app, app.selected_date)
         .into_iter()
         .filter(|event| {
             if event.all_day {
-                hour == 0
+                hour == 0 && minute == 0
             } else {
-                event.starts_at.with_timezone(&Local).hour() == hour
+                let starts_at = event.starts_at.with_timezone(&Local);
+                starts_at.hour() == hour && current_half_hour(starts_at.minute()) == minute
             }
         })
         .collect()
+}
+
+fn current_half_hour(minute: u32) -> u32 {
+    if minute < 30 { 0 } else { 30 }
 }
 
 fn event_summary_line(app: &App, events: Vec<&Event>) -> Line<'static> {
@@ -492,11 +604,64 @@ fn event_summary_line(app: &App, events: Vec<&Event>) -> Line<'static> {
     Line::from(spans)
 }
 
-fn event_detail_line(app: &App, event: &Event, prefix: &'static str) -> Line<'static> {
-    Line::from(Span::styled(
-        format!("{prefix}{}", format_event(event)),
-        selectable_event_style(app, event),
-    ))
+fn week_event_cell_text(
+    app: &App,
+    events: Vec<&Event>,
+    width: usize,
+    max_lines: usize,
+) -> Text<'static> {
+    let mut lines = Vec::new();
+    let width = width.max(1);
+
+    for event in events {
+        if lines.len() >= max_lines {
+            break;
+        }
+
+        let style = selectable_event_style(app, event);
+        for line in wrap_words(&format_week_event(event), width, max_lines - lines.len()) {
+            lines.push(Line::from(Span::styled(line, style)));
+        }
+    }
+
+    Text::from(lines)
+}
+
+fn wrap_words(value: &str, width: usize, max_lines: usize) -> Vec<String> {
+    if max_lines == 0 {
+        return Vec::new();
+    }
+
+    let mut lines = Vec::new();
+    let mut current = String::new();
+
+    for word in value.split_whitespace() {
+        let separator = usize::from(!current.is_empty());
+        if !current.is_empty() && current.chars().count() + separator + word.chars().count() > width
+        {
+            lines.push(current);
+            current = String::new();
+
+            if lines.len() == max_lines {
+                return lines;
+            }
+        }
+
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+
+    if !current.is_empty() && lines.len() < max_lines {
+        lines.push(current);
+    }
+
+    if lines.is_empty() {
+        lines.push(truncate(value, width));
+    }
+
+    lines
 }
 
 fn selectable_event_style(app: &App, event: &Event) -> Style {
@@ -671,6 +836,14 @@ fn format_event(event: &Event) -> String {
     format!("{time} {}", event.title)
 }
 
+fn format_week_event(event: &Event) -> String {
+    if event.all_day {
+        event.title.clone()
+    } else {
+        format!("{} {}", short_time(event), event.title)
+    }
+}
+
 fn format_event_range(event: &Event) -> String {
     let starts_at = event.starts_at.with_timezone(&Local);
     let ends_at = event.ends_at.with_timezone(&Local);
@@ -725,6 +898,23 @@ fn short_time(event: &Event) -> String {
     let starts_at = event.starts_at.with_timezone(&Local);
     let hour = starts_at.hour();
     let minute = starts_at.minute();
+    format_compact_time(hour, minute)
+}
+
+fn format_hour_label(hour: u32) -> String {
+    format_compact_time(hour, 0)
+}
+
+fn format_day_slot_label(hour: u32, minute: u32) -> String {
+    let suffix = if hour < 12 { "a" } else { "p" };
+    let hour = match hour % 12 {
+        0 => 12,
+        hour => hour,
+    };
+    format!("{hour}:{minute:02}{suffix}")
+}
+
+fn format_compact_time(hour: u32, minute: u32) -> String {
     let suffix = if hour < 12 { "a" } else { "p" };
     let hour = match hour % 12 {
         0 => 12,

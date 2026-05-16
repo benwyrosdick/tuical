@@ -181,6 +181,9 @@ impl App {
             KeyCode::Char('h') | KeyCode::Left => {
                 if self.view == CalendarView::Month {
                     self.move_month_selection(-1);
+                } else if self.view == CalendarView::Week {
+                    self.move_week_selection(-1);
+                    self.refresh_events().await?;
                 } else {
                     self.move_backward();
                     self.refresh_events().await?;
@@ -189,6 +192,9 @@ impl App {
             KeyCode::Char('l') | KeyCode::Right => {
                 if self.view == CalendarView::Month {
                     self.move_month_selection(1);
+                } else if self.view == CalendarView::Week {
+                    self.move_week_selection(1);
+                    self.refresh_events().await?;
                 } else {
                     self.move_forward();
                     self.refresh_events().await?;
@@ -281,6 +287,17 @@ impl App {
         }
     }
 
+    fn move_week_selection(&mut self, days: i64) {
+        self.selected_date = if days.is_negative() {
+            self.selected_date
+                .checked_sub_days(Days::new(days.unsigned_abs()))
+        } else {
+            self.selected_date.checked_add_days(Days::new(days as u64))
+        }
+        .unwrap_or(self.selected_date);
+        self.clamp_event_selection();
+    }
+
     fn change_view(&mut self, view: CalendarView) -> Result<()> {
         self.view = view;
         self.save_settings()
@@ -306,7 +323,14 @@ impl App {
             return Vec::new();
         }
 
-        let range = self.visible_time_range();
+        let range = TimeRange {
+            starts_at: local_midnight_utc(self.selected_date),
+            ends_at: local_midnight_utc(
+                self.selected_date
+                    .checked_add_days(Days::new(1))
+                    .unwrap_or(self.selected_date),
+            ),
+        };
         let mut events: Vec<&Event> = self
             .events
             .iter()
@@ -663,7 +687,7 @@ impl App {
 }
 
 fn start_of_week(date: chrono::NaiveDate) -> chrono::NaiveDate {
-    date.checked_sub_days(Days::new(date.weekday().num_days_from_monday().into()))
+    date.checked_sub_days(Days::new(date.weekday().num_days_from_sunday().into()))
         .unwrap_or(date)
 }
 
